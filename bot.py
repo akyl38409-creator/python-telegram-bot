@@ -8,8 +8,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
+import os
 TOKEN = os.getenv("BOT_TOKEN")
-
 # ---------------------------
 # Загружаем JSON данные
 # ---------------------------
