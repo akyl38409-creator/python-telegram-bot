@@ -1,254 +1,110 @@
-import os
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
-
 import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+
 TOKEN = os.getenv("BOT_TOKEN")
-# ---------------------------
-# Загружаем JSON данные
-# ---------------------------
-def load_data():
-    if not os.path.exists("data.json"):
-        with open("data.json", "w") as f:
-            json.dump({"users": {}, "menu": {}, "orders": {}}, f)
-    with open("data.json", "r") as f:
-        return json.load(f)
+ADMIN_ID = 8245116257
 
-def save_data(data):
-    with open("data.json", "w") as f:
-        json.dump(data, f, indent=4)
+USERS_FILE = "users.json"
+MENU_FILE = "menu.json"
+ORDERS_FILE = "orders.json"
 
+def load_data(file):
+    try:
+        with open(file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
 
-# ---------------------------
-# Команда /start
-# ---------------------------
+def save_data(file, data):
+    with open(file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+users = load_data(USERS_FILE)
+menu = {"Бургер": {"price": 200}, "Пицца": {"price": 500}}
+orders = load_data(ORDERS_FILE)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    data = load_data()
+    if user_id not in users:
+        users[user_id] = {"name": update.effective_user.first_name, "cart": [], "role": "user"}
+        save_data(USERS_FILE, users)
+        await update.message.reply_text("👋 Добро пожаловать!")
+    await show_main_menu(update, context)
 
-    if user_id not in data["users"]:
-        data["users"][user_id] = {"cart": []}
-        save_data(data)
-
-    kb = [
-        [InlineKeyboardButton("🍽 Меню", callback_data="menu")],
-        [InlineKeyboardButton("🛒 Корзина", callback_data="cart")],
-        [InlineKeyboardButton("📦 Мои заказы", callback_data="orders")],
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📋 Меню", callback_data="menu")],
+        [InlineKeyboardButton("🛒 Корзина", callback_data="cart")]
     ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.message:
+        await update.message.reply_text("Выбери:", reply_markup=reply_markup)
+    else:
+        await update.callback_query.edit_message_text("Выбери:", reply_markup=reply_markup)
 
-    await update.message.reply_text(
-        "👋 Добро пожаловать в *Ресторан Bot*!",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown"
-    )
-
-
-# ---------------------------
-# Показ меню
-# ---------------------------
-async def show_menu(update, context):
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = load_data()
-    menu = data["menu"]
+    text = "📋 Меню:\n"
+    keyboard = []
 
-    if not menu:
-        await query.edit_message_text("❗ Меню пока пустое (добавь блюда через админ-панель)")
-        return
+    for name, info in menu.items():
+        text += f"{name} — {info['price']} сом\n"
+        keyboard.append([InlineKeyboardButton(f"➕ {name}", callback_data=f"add_{name}")])
 
-    kb = []
-    for item_id, item in menu.items():
-        kb.append([InlineKeyboardButton(f"{item['name']} — {item['price']}₽",
-                                        callback_data=f"add:{item_id}")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main")])
 
-    kb.append([InlineKeyboardButton("⬅ Назад", callback_data="back")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-    await query.edit_message_text("🍽 *Меню:*", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-
-
-# ---------------------------
-# Корзина
-# ---------------------------
-async def show_cart(update, context):
+async def add_to_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_id = str(query.from_user.id)
-    data = load_data()
-    cart = data["users"][user_id]["cart"]
+    item = query.data.replace("add_", "")
+    user_id = str(update.effective_user.id)
+
+    users[user_id]["cart"].append(item)
+    save_data(USERS_FILE, users)
+
+    await query.edit_message_text(f"✅ {item} добавлен!")
+
+async def show_cart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(update.effective_user.id)
+    cart = users[user_id]["cart"]
 
     if not cart:
-        await query.edit_message_text("🛒 Корзина пуста")
+        await query.edit_message_text("Корзина пуста")
         return
 
-    text = "🛒 *Ваш заказ:*\n\n"
-    total = 0
-    for item in cart:
-        text += f"• {item['name']} — {item['price']}₽\n"
-        total += item['price']
+    text = "\n".join(cart)
+    await query.edit_message_text(f"🛒 {text}")
 
-    text += f"\n💰 *Итого: {total}₽*"
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.callback_query.data
 
-    kb = [
-        [InlineKeyboardButton("📦 Оформить заказ", callback_data="make_order")],
-        [InlineKeyboardButton("🗑 Очистить", callback_data="clear_cart")],
-        [InlineKeyboardButton("⬅ Назад", callback_data="back")]
-    ]
-
-    await query.edit_message_text(
-        text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-
-# ---------------------------
-# Добавление в корзину
-# ---------------------------
-async def add_to_cart(update, context, item_id):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = str(query.from_user.id)
-    data = load_data()
-    menu = data["menu"]
-
-    if item_id not in menu:
-        await query.edit_message_text("❗ Ошибка: такого блюда нет")
-        return
-
-    data["users"][user_id]["cart"].append(menu[item_id])
-    save_data(data)
-
-    await query.edit_message_text(f"Добавлено в корзину: *{menu[item_id]['name']}*", parse_mode="Markdown")
-
-
-# ---------------------------
-# Оформление заказа
-# ---------------------------
-async def make_order(update, context):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = str(query.from_user.id)
-    data = load_data()
-
-    cart = data["users"][user_id]["cart"]
-    if not cart:
-        await query.edit_message_text("Корзина пуста!")
-        return
-
-    order_id = str(len(data["orders"]) + 1)
-    data["orders"][order_id] = {
-        "user": user_id,
-        "items": cart,
-    }
-
-    data["users"][user_id]["cart"] = []
-    save_data(data)
-
-    await query.edit_message_text(f"📦 Ваш заказ №{order_id} оформлен!")
-
-
-# ---------------------------
-# Просмотр заказов
-# ---------------------------
-async def show_orders(update, context):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = str(query.from_user.id)
-    data = load_data()
-
-    text = "📦 *Ваши заказы:*\n\n"
-    found = False
-
-    for order_id, order in data["orders"].items():
-        if order["user"] == user_id:
-            found = True
-            items = ", ".join(i["name"] for i in order["items"])
-            text += f"• Заказ {order_id}: {items}\n"
-
-    if not found:
-        text = "У вас пока нет заказов."
-
-    await query.edit_message_text(text, parse_mode="Markdown")
-
-
-# ---------------------------
-# ADMIN PANEL
-# ---------------------------
-ADMIN_ID = 5900  # <-- сюда поставь свой Telegram ID
-
-async def admin(update, context):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❗ У вас нет доступа.")
-        return
-
-    kb = [
-        [InlineKeyboardButton("➕ Добавить блюдо", callback_data="admin_add")],
-        [InlineKeyboardButton("📋 Все заказы", callback_data="admin_orders")],
-        [InlineKeyboardButton("🍽 Меню", callback_data="admin_menu")],
-    ]
-
-    await update.message.reply_text(
-        "*Админ-панель:*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-
-# ---------------------------
-# Обработка callback
-# ---------------------------
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    if data == "menu":
+    if data == "main":
+        await show_main_menu(update, context)
+    elif data == "menu":
         await show_menu(update, context)
-
+    elif data.startswith("add_"):
+        await add_to_cart(update, context)
     elif data == "cart":
         await show_cart(update, context)
 
-    elif data == "orders":
-        await show_orders(update, context)
-
-    elif data.startswith("add:"):
-        await add_to_cart(update, context, data.split(":")[1])
-
-    elif data == "make_order":
-        await make_order(update, context)
-
-    elif data == "clear_cart":
-        user_id = str(query.from_user.id)
-        db = load_data()
-        db["users"][user_id]["cart"] = []
-        save_data(db)
-        await query.edit_message_text("🗑 Корзина очищена")
-
-    elif data == "back":
-        await start(query, context)
-
-
-# ---------------------------
-# Запуск бота
-# ---------------------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin))
-    app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(CallbackQueryHandler(callback_router))
 
-    print("BOT RUNNING...")
+    print("Bot started...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
